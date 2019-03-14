@@ -4,6 +4,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math, copy
 from torch.autograd import Variable
+from crf import ConditionalRandomField
+
+
+def calc_loss(logit, y, mask):
+    ''' Calculate loss of single task. '''
+
+    criterion = nn.CrossEntropyLoss(reduce='none')
+
+    bsz = logit.size(0)
+    seq_len = logit.size(1)
+
+    loss_vec = criterion(logit.reshape(bsz*seq_len, logit.size(2)),
+                         y.reshape(bsz*seq_len))
+    loss = loss_vec.masked_select(mask.reshape(-1)).mean()
+
+    return loss
 
 
 def clones(module, N):
@@ -189,6 +205,7 @@ class Transformer(nn.Module):
         N = args.n_layer
         dropout = args.dropout
         vocab_size = args.vocab_size
+        self.use_crf = args.use_crf
 
         c = copy.deepcopy
         attn = MultiHeadedAttention(h, d_model)
@@ -208,9 +225,29 @@ class Transformer(nn.Module):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
+
+        if self.use_crf:
+            self.crf = nn.ModuleList([
+                ConditionalRandomField(n_classes[0], True),
+                ConditionalRandomField(n_classes[1], True),
+                ConditionalRandomField(n_classes[2], True)
+            ])
     
-    def forward(self, src, src_mask):
-        x = self.encoder(self.embed(src), src_mask)
-        return [self.out[i](x) for i in range(3)]
-        
+    def forward(self, src, y1, y2, y3, src_mask):
+        x = self.encoder(self.embed(src), src_mask.unsqueeze(-2))
+        logits = [self.out[i](x) for i in range(3)]
+        y = [y1, y2, y3]
+
+        if self.use_crf:
+            losses = [self.crf[i](logits[i], y[i], src_mask).mean()
+                      for i in range(3)]
+            preds = [self.crf[i].viterbi_decode(logits[i], src_mask)
+                     for i in range(3)]
+        else:
+            losses = [calc_loss(logits[i], y[i], src_mask) for i in range(3)]
+            preds = [torch.argmax(logits[i], dim=2) for i in range(3)]
+
+        return losses, preds
+
+
         

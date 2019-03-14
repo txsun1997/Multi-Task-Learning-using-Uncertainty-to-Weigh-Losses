@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from transformer import Transformer
+from lstm import BiLSTM
 from utils import load_word_emb
 from dataset import SeqLabDataset, custom_collate
 from torch.utils.data.dataloader import DataLoader
@@ -39,45 +40,45 @@ file_handler.setFormatter(file_formatter)
 logger.addHandler(file_handler)
 
 
-def calc_stl_loss(logit, y, mask):
-    ''' Calculate loss of single task. '''
-
-    criterion = nn.CrossEntropyLoss(reduce='none')
-
-    bsz = logit.size(0)
-    seq_len = logit.size(1)
-
-    loss_vec = criterion(logit.reshape(bsz*seq_len, logit.size(2)),
-                         y.reshape(bsz*seq_len))
-    loss = loss_vec.masked_select(mask.reshape(-1)).mean()
-
-    return loss
-
-
-def calc_avg_loss(logits, ys, mask):
-    ''' Average loss of three tasks (POS, NER, Chunking) '''
-
-    criterion = nn.CrossEntropyLoss(reduce='none')
-
-    logit1, logit2, logit3 = logits
-    y1, y2, y3 = ys
-    bsz = logit1.size(0)
-    seq_len = logit1.size(1)
-
-    loss1_vec = criterion(logit1.reshape(bsz * seq_len, logit1.size(2)),
-                          y1.reshape(bsz * seq_len))
-    loss2_vec = criterion(logit2.reshape(bsz * seq_len, logit2.size(2)),
-                          y2.reshape(bsz * seq_len))
-    loss3_vec = criterion(logit3.reshape(bsz * seq_len, logit3.size(2)),
-                          y3.reshape(bsz * seq_len))
-
-    loss1 = loss1_vec.masked_select(mask.reshape(-1)).mean()
-    loss2 = loss2_vec.masked_select(mask.reshape(-1)).mean()
-    loss3 = loss3_vec.masked_select(mask.reshape(-1)).mean()
-
-    loss = (loss1 + loss2 + loss3) / 3
-
-    return loss
+# def calc_stl_loss(logit, y, mask):
+#     ''' Calculate loss of single task. '''
+#
+#     criterion = nn.CrossEntropyLoss(reduce='none')
+#
+#     bsz = logit.size(0)
+#     seq_len = logit.size(1)
+#
+#     loss_vec = criterion(logit.reshape(bsz*seq_len, logit.size(2)),
+#                          y.reshape(bsz*seq_len))
+#     loss = loss_vec.masked_select(mask.reshape(-1)).mean()
+#
+#     return loss
+#
+#
+# def calc_avg_loss(logits, ys, mask):
+#     ''' Average loss of three tasks (POS, NER, Chunking) '''
+#
+#     criterion = nn.CrossEntropyLoss(reduce='none')
+#
+#     logit1, logit2, logit3 = logits
+#     y1, y2, y3 = ys
+#     bsz = logit1.size(0)
+#     seq_len = logit1.size(1)
+#
+#     loss1_vec = criterion(logit1.reshape(bsz * seq_len, logit1.size(2)),
+#                           y1.reshape(bsz * seq_len))
+#     loss2_vec = criterion(logit2.reshape(bsz * seq_len, logit2.size(2)),
+#                           y2.reshape(bsz * seq_len))
+#     loss3_vec = criterion(logit3.reshape(bsz * seq_len, logit3.size(2)),
+#                           y3.reshape(bsz * seq_len))
+#
+#     loss1 = loss1_vec.masked_select(mask.reshape(-1)).mean()
+#     loss2 = loss2_vec.masked_select(mask.reshape(-1)).mean()
+#     loss3 = loss3_vec.masked_select(mask.reshape(-1)).mean()
+#
+#     loss = (loss1 + loss2 + loss3) / 3
+#
+#     return loss
 
 
 def train_epoch(model, train_iter, optimizer, accumulation_steps):
@@ -113,20 +114,17 @@ def train_epoch(model, train_iter, optimizer, accumulation_steps):
         x, y1, y2, y3, mask = batch
         x, y1, y2, y3, mask = x.cuda(), y1.cuda(), y2.cuda(), y3.cuda(), mask.cuda()
 
-        logit1, logit2, logit3 = model(x, mask)
-        # shape of logit: batch_size x seq_len x n_class
+        losses, preds = model(x, y1, y2, y3, mask)
 
-        # loss = calc_avg_loss([logit1, logit2, logit3], [y1, y2, y3], mask) / accumulation_steps
-        loss = calc_stl_loss(logit1, y1, mask)
+        pos_loss, ner_loss, chunk_loss = losses
+        pos_pred, ner_pred, chunk_pred = preds
+
+        loss = (pos_loss + ner_loss + chunk_loss) / 3 / accumulation_steps
+        # loss = pos_loss / accumulation_steps
 
         loss.backward()
 
         total_loss += loss.item()
-
-        pos_pred = torch.argmax(logit1, dim=2)
-        ner_pred = torch.argmax(logit2, dim=2)
-        chunk_pred = torch.argmax(logit3, dim=2)
-        # bsz x seq_len
 
         for i in range(pos_pred.size(0)):
             i_pos_pred = pos_pred[i].masked_select(mask[i].reshape(-1))
@@ -207,17 +205,13 @@ def eval_epoch(model, data_iter):
             x, y1, y2, y3, mask = batch
             x, y1, y2, y3, mask = x.cuda(), y1.cuda(), y2.cuda(), y3.cuda(), mask.cuda()
 
-            logit1, logit2, logit3 = model(x, mask)
-            # shape of logit: batch_size x seq_len x n_class
+            losses, preds = model(x, y1, y2, y3, mask)
+            pos_loss, ner_loss, chunk_loss = losses
+            pos_pred, ner_pred, chunk_pred = preds
 
-            loss = calc_avg_loss([logit1, logit2, logit3], [y1, y2, y3], mask)
-
+            loss = (pos_loss + ner_loss + chunk_loss) / 3
+            # loss = pos_loss / accumulation_steps
             total_loss += loss.item()
-
-            pos_pred = torch.argmax(logit1, dim=2)
-            ner_pred = torch.argmax(logit2, dim=2)
-            chunk_pred = torch.argmax(logit3, dim=2)
-            # bsz x seq_len
 
             for i in range(pos_pred.size(0)):
                 # eval POS Tagging: Accuracy
@@ -254,7 +248,8 @@ def train(model, train_iter, dev_iter, optimizer, device, args):
 
     total_time = time.time()
     logger.info('Training......')
-    model = nn.DataParallel(model, device).cuda()
+    # model = nn.DataParallel(model, device).cuda()
+    model = model.cuda()
 
     log_path = args.log_dir + str(time.strftime('%Y-%m-%d_%H.%M.%S', time.localtime()))
     global summary_writer
@@ -309,7 +304,7 @@ def test(model, test_iter):
 def main():
     ''' main function '''
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = '0, 2, 3'
+    os.environ["CUDA_VISIBLE_DEVICES"] = '0'
     gpu = [0, 1]
 
     parser = argparse.ArgumentParser(
@@ -322,7 +317,9 @@ def main():
     parser.add_argument('-n_head', type=int, default=6)
     parser.add_argument('-n_layer', type=int, default=6)
     parser.add_argument('-dropout', type=float, default=0.1)
-    parser.add_argument('-early_stop', type=int, default=3)
+    parser.add_argument('-use_crf', type=int, default=1)
+    parser.add_argument('-hidden_size', type=int, default=512)
+    parser.add_argument('-model', type=str, default='transformer')
     parser.add_argument('-log_dir', type=str, default='logs/tensorboardlogs/')
     parser.add_argument('-embed_path', type=str,
                         default='/remote-home/txsun/data/word-embedding/glove/glove.6B.300d.txt')
@@ -368,15 +365,24 @@ def main():
     word_embedding = load_word_emb(args.embed_path, args.d_model, vocab)
 
     logger.info('========== Preparing Model ==========')
-    transformer = Transformer(args, word_embedding)
-    params = list(transformer.named_parameters())
+    if args.model == 'transformer':
+        model = Transformer(args, word_embedding)
+    elif args.model == 'LSTM':
+        model = BiLSTM(args, word_embedding)
+    else:
+        logger.error('No support for {}.'.format(args.model))
+        return
+
+    params = list(model.named_parameters())
     for name, param in params:
         logger.info('{}: {}'.format(name, param.shape))
-    logger.info('# Parameters: {}.'.format(sum(param.numel() for param in transformer.parameters())))
+    logger.info('# Parameters: {}.'.format(sum(param.numel() for param in model.parameters())))
 
     logger.info('========== Training Model ==========')
-    opt = optim.Adam(transformer.parameters(), lr=5e-5)
-    train(transformer, train_iter, dev_iter, opt, gpu, args)
+    opt = optim.Adam(model.parameters(), lr=5e-4)
+    train(model, train_iter, dev_iter, opt, gpu, args)
+
+    return
 
 
 if __name__ == '__main__':

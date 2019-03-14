@@ -27,7 +27,7 @@ def custom_collate(batch):
     batch_pos_label = torch.LongTensor(np.array(batch_pos_label))
     batch_ner_label = torch.LongTensor(np.array(batch_ner_label))
     batch_chunk_label = torch.LongTensor(np.array(batch_chunk_label))
-    batch_mask = (batch_sent != DEFAULT_PADDING_LABEL).unsqueeze(-2) # bsz x 1 x seq_len
+    batch_mask = batch_sent != DEFAULT_PADDING_LABEL # bsz x seq_len
 
     return batch_sent, batch_pos_label, batch_ner_label, batch_chunk_label, batch_mask
 
