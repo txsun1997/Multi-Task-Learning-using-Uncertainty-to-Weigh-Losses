@@ -195,17 +195,17 @@ class Transformer(nn.Module):
     """
     A transformer encoder.
     """
-    def __init__(self, args, word_embedding):
+    def __init__(self, args, config, word_embedding):
         super(Transformer, self).__init__()
 
         n_classes = args.n_classes
-        d_model = args.d_model
-        h = args.n_head
-        d_ff = args.d_ff
-        N = args.n_layer
-        dropout = args.dropout
+        d_model = int(config['d_model'])
+        h = int(config['n_head'])
+        d_ff = int(config['d_ff'])
+        N = int(config['n_layer'])
+        dropout = float(config['dropout'])
         vocab_size = args.vocab_size
-        self.use_crf = args.use_crf
+        self.use_crf = int(config['use_crf'])
 
         c = copy.deepcopy
         attn = MultiHeadedAttention(h, d_model)

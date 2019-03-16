@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 from crf import ConditionalRandomField
-
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 def calc_loss(logit, y, mask):
     ''' Calculate loss of single task. '''
@@ -41,16 +40,16 @@ def init_linear(input_linear, seed=1337):
 
 class BiLSTM(nn.Module):
 
-    def __init__(self, args, word_embedding):
+    def __init__(self, args, config, word_embedding):
         super(BiLSTM, self).__init__()
 
         self.vocab_size = args.vocab_size
-        self.embed_dim = args.d_model
-        self.hidden_size = args.hidden_size
+        self.embed_dim = int(config['embed_dim'])
+        self.hidden_size = int(config['hidden_size'])
         self.n_classes = args.n_classes
-        self.dropout_p = args.dropout
-        self.n_layer = args.n_layer
-        self.use_crf = args.use_crf
+        self.dropout_p = float(config['dropout'])
+        self.n_layer = int(config['n_layer'])
+        self.use_crf = int(config['use_crf'])
 
         we = torch.from_numpy(word_embedding).float()
         self.embed = nn.Embedding(self.vocab_size, self.embed_dim, _weight=we)

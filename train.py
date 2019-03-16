@@ -20,6 +20,7 @@ from seqeval.metrics import classification_report
 summary_writer = None
 lb_vocabs = None
 steps = 0
+model_config = {}
 
 logger = logging.getLogger('train')
 logger.setLevel(level=logging.DEBUG)
@@ -81,7 +82,7 @@ logger.addHandler(file_handler)
 #     return loss
 
 
-def train_epoch(model, train_iter, optimizer, accumulation_steps):
+def train_epoch(model, train_iter, optimizer, args):
 
     global steps
     global lb_vocabs
@@ -105,6 +106,13 @@ def train_epoch(model, train_iter, optimizer, accumulation_steps):
 
     print_every = 128
 
+    loss_split = args.loss_split.split('-')
+    loss_split = [int(loss_split[i]) for i in range(3)]
+    sum = 0
+    for i in range(3):
+        sum += loss_split[i]
+    loss_split = [loss_split[i] / sum for i in range(3)]
+
     model.train()
 
     for batch in train_iter:
@@ -119,10 +127,12 @@ def train_epoch(model, train_iter, optimizer, accumulation_steps):
         pos_loss, ner_loss, chunk_loss = losses
         pos_pred, ner_pred, chunk_pred = preds
 
-        loss = (pos_loss + ner_loss + chunk_loss) / 3 / accumulation_steps
-        # loss = pos_loss / accumulation_steps
+        loss = (loss_split[0] * pos_loss + loss_split[1] * ner_loss + loss_split[2] * chunk_loss)\
+               / args.accumulation_steps
 
         loss.backward()
+
+        nn.utils.clip_grad_norm(model.parameters(), max_norm=5.0)
 
         total_loss += loss.item()
 
@@ -148,7 +158,7 @@ def train_epoch(model, train_iter, optimizer, accumulation_steps):
             chunk_true_lst += [chunk_vocab.to_word(int(val)) for val in i_chunk_true]
             all_chunk_true_lst += [chunk_vocab.to_word(int(val)) for val in i_chunk_true]
 
-        if steps % accumulation_steps == 0:
+        if steps % args.accumulation_steps == 0:
             optimizer.step()
             optimizer.zero_grad()
             if steps % print_every == 0:
@@ -156,8 +166,8 @@ def train_epoch(model, train_iter, optimizer, accumulation_steps):
                 ner_f1 = f1_score(ner_true_lst, ner_pred_lst)
                 chunk_f1 = f1_score(chunk_true_lst, chunk_pred_lst)
 
-                summary_writer.add_scalar('loss', total_loss, steps)
-                summary_writer.add_scalars('train_measure', {
+                summary_writer.add_scalar('Train/train_loss', total_loss, steps)
+                summary_writer.add_scalars('Train/train_measure', {
                     'POS-ACC': pos_acc,
                     'NER-F1': ner_f1,
                     'CHUNK-F1': chunk_f1
@@ -243,7 +253,7 @@ def eval_epoch(model, data_iter):
     return total_loss, all_pos_acc, all_ner_f1, all_chunk_f1
 
 
-def train(model, train_iter, dev_iter, optimizer, device, args):
+def train(model, train_iter, dev_iter, optimizer, args):
     ''' start training '''
 
     total_time = time.time()
@@ -251,7 +261,12 @@ def train(model, train_iter, dev_iter, optimizer, device, args):
     # model = nn.DataParallel(model, device).cuda()
     model = model.cuda()
 
-    log_path = args.log_dir + str(time.strftime('%Y-%m-%d_%H.%M.%S', time.localtime()))
+    config_str = ''
+    global model_config
+    for key, value in model_config.items():
+        config_str += key + '-' + value + '-'
+    log_path = os.path.join(args.log_dir, config_str + args.loss_split)
+    # log_path = args.log_dir + str(time.strftime('%Y-%m-%d_%H.%M.%S', time.localtime()))
     global summary_writer
     summary_writer = SummaryWriter(log_path)
 
@@ -259,37 +274,36 @@ def train(model, train_iter, dev_iter, optimizer, device, args):
         logger.info('Epoch {}'.format(i_epoch + 1))
 
         start_time = time.time()
-        pos_acc, ner_f1, chunk_f1 = train_epoch(model, train_iter, optimizer, args.accumulate_grad)
-        logger.info(' Epoch {} finished. Measure: {:.3f}%, {:.3f}%, {:.3f}%. Elapse: {}s.'
-                    .format(i_epoch+1, pos_acc, ner_f1,
-                            chunk_f1, time.time() - start_time))
+        pos_acc, ner_f1, chunk_f1 = train_epoch(model, train_iter, optimizer, args)
+        logger.info(' Epoch {} finished. Measure: {:.3f}%, {:.3f}%, {:.3f}%. Elapse: {:.3f}%s.'
+                    .format(i_epoch+1, pos_acc*100, ner_f1*100,
+                            chunk_f1*100, time.time() - start_time))
 
         start_time = time.time()
         dev_loss, dev_pos, dev_ner, dev_chunk = eval_epoch(model, dev_iter)
-        logger.info('Validation: Loss: {}  Measure: {:.3f}%, {:.3f}%, {:.3f}%. Elapse: {}s.'
-                    .format(dev_loss, dev_pos, dev_ner, dev_chunk,
+        logger.info('Validation: Loss: {}  Measure: {:.3f}%, {:.3f}%, {:.3f}%. Elapse: {:.3f}%s.'
+                    .format(dev_loss, dev_pos*100, dev_ner*100, dev_chunk*100,
                             time.time() - start_time))
 
-        summary_writer.add_scalars('dev_measure', {
-            'LOSS': dev_loss,
+        summary_writer.add_scalar('Validation/dev_loss', dev_loss, i_epoch + 1)
+        summary_writer.add_scalars('Validation/dev_measure', {
             'POS-ACC': dev_pos,
             'NER-F1': dev_ner,
             'CHUNK-F1': dev_chunk
         }, i_epoch+1)
 
-    summary_writer.export_scalars_to_json('save/result_' +
-        str(time.strftime('%Y-%m-%d_%H.%M.%S', time.localtime()))
-        + '.json')
-    logger.info('Results saved to save/ directory.')
+    # summary_writer.export_scalars_to_json('save/result_' +
+    #     str(time.strftime('%Y-%m-%d_%H.%M.%S', time.localtime()))
+    #     + '.json')
+    # logger.info('Results saved to save/ directory.')
     summary_writer.close()
     del summary_writer
 
-    logger.info('Training finished. Cost {} hours.'.format((time.time() - total_time)/3600))
+    logger.info('Training finished. Cost {:.3f}% hours.'.format((time.time() - total_time)/3600))
     logger.info('Dumping model...')
-    torch.save(model, 'save/model' +
-               str(time.strftime('%Y-%m-%d_%H.%M.%S', time.localtime()))
-               + '.pkl')
-    logger.info('Model saved.')
+    save_path = os.path.join(args.save_path, config_str + args.loss_split)
+    torch.save(model, save_path + '.pkl')
+    logger.info('Model saved as {}.'.format(save_path + '.pkl'))
 
     return
 
@@ -304,29 +318,23 @@ def test(model, test_iter):
 def main():
     ''' main function '''
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = '0'
-    gpu = [0, 1]
-
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-n_epoch', type=int, default=5)
+    parser.add_argument('-n_epoch', type=int, default=10)
     parser.add_argument('-batch_size', type=int, default=64)
-    parser.add_argument('-accumulate_grad', type=int, default=1)
-    parser.add_argument('-d_model', type=int, default=300)
-    parser.add_argument('-d_ff', type=int, default=512)
-    parser.add_argument('-n_head', type=int, default=6)
-    parser.add_argument('-n_layer', type=int, default=6)
-    parser.add_argument('-dropout', type=float, default=0.1)
-    parser.add_argument('-use_crf', type=int, default=1)
-    parser.add_argument('-hidden_size', type=int, default=512)
-    parser.add_argument('-model', type=str, default='transformer')
+    parser.add_argument('-gpu', type=str, default='0')
+    parser.add_argument('-accumulation_steps', type=int, default=1)
+    parser.add_argument('-model_config', type=str, default='lstm.config')
+    parser.add_argument('-loss_split', type=str, default='1-1-1')
     parser.add_argument('-log_dir', type=str, default='logs/tensorboardlogs/')
+    parser.add_argument('-save_path', type=str, default='saved_models/')
     parser.add_argument('-embed_path', type=str,
                         default='/remote-home/txsun/data/word-embedding/glove/glove.6B.300d.txt')
 
     args = parser.parse_args()
 
-    bsz = args.batch_size // args.accumulate_grad
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    bsz = args.batch_size // args.accumulation_steps
     logger.info('========== Loading Datasets ==========')
     data = torch.load('data/all_data.pkl')
     vocab = data['vocab']
@@ -362,25 +370,37 @@ def main():
     logger.info('Datasets finished.')
 
     logger.info('====== Loading Word Embedding =======')
-    word_embedding = load_word_emb(args.embed_path, args.d_model, vocab)
+    word_embedding = load_word_emb(args.embed_path, 300, vocab)
 
     logger.info('========== Preparing Model ==========')
-    if args.model == 'transformer':
-        model = Transformer(args, word_embedding)
-    elif args.model == 'LSTM':
-        model = BiLSTM(args, word_embedding)
+    global model_config
+    model_config = {}
+    logger.info('Reading configure file {}...'.format(args.model_config))
+    with open(args.model_config, 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            key = line.split(':')[0].strip()
+            value = line.split(':')[1].strip()
+            model_config[key] = value
+            logger.info('{}: {}'.format(key, value))
+
+    if model_config['model'] == 'transformer':
+        model = Transformer(args, model_config, word_embedding)
+    elif model_config['model'] == 'LSTM':
+        model = BiLSTM(args, model_config, word_embedding)
     else:
-        logger.error('No support for {}.'.format(args.model))
+        logger.error('No support for {}.'.format(model_config['model']))
         return
 
+    logger.info('Model parameters:')
     params = list(model.named_parameters())
     for name, param in params:
         logger.info('{}: {}'.format(name, param.shape))
     logger.info('# Parameters: {}.'.format(sum(param.numel() for param in model.parameters())))
 
     logger.info('========== Training Model ==========')
-    opt = optim.Adam(model.parameters(), lr=5e-4)
-    train(model, train_iter, dev_iter, opt, gpu, args)
+    opt = optim.Adam(model.parameters(), lr=float(model_config['lr']))
+    train(model, train_iter, dev_iter, opt, args)
 
     return
 
