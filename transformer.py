@@ -232,6 +232,10 @@ class Transformer(nn.Module):
                 ConditionalRandomField(n_classes[1], True),
                 ConditionalRandomField(n_classes[2], True)
             ])
+
+        self.log_sigma_square_pos = nn.Parameter(torch.Tensor([0]))
+        self.log_sigma_square_ner = nn.Parameter(torch.Tensor([0]))
+        self.log_sigma_square_chunk = nn.Parameter(torch.Tensor([0]))
     
     def forward(self, src, y1, y2, y3, src_mask):
         x = self.encoder(self.embed(src), src_mask.unsqueeze(-2))

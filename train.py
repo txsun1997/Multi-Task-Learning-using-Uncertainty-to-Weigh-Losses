@@ -21,24 +21,9 @@ summary_writer = None
 lb_vocabs = None
 steps = 0
 model_config = {}
-
+config_str = ''
 logger = logging.getLogger('train')
 logger.setLevel(level=logging.DEBUG)
-
-# Stream Handler
-stream_handler = logging.StreamHandler(sys.stdout)
-stream_handler.setLevel(logging.INFO)
-stream_formatter = logging.Formatter('[%(levelname)s] %(message)s')
-stream_handler.setFormatter(stream_formatter)
-logger.addHandler(stream_handler)
-
-# File Handler
-file_handler = logging.FileHandler('logs/train.log')
-file_handler.setLevel(logging.DEBUG)
-file_formatter = logging.Formatter(fmt='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s',
-                                   datefmt='%Y/%m/%d %H:%M:%S')
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
 
 
 # def calc_stl_loss(logit, y, mask):
@@ -87,6 +72,7 @@ def train_epoch(model, train_iter, optimizer, args):
     global steps
     global lb_vocabs
     global summary_writer
+    global config_str
 
     total_loss = 0
 
@@ -106,12 +92,13 @@ def train_epoch(model, train_iter, optimizer, args):
 
     print_every = 128
 
-    loss_split = args.loss_split.split('-')
-    loss_split = [int(loss_split[i]) for i in range(3)]
-    sum = 0
-    for i in range(3):
-        sum += loss_split[i]
-    loss_split = [loss_split[i] / sum for i in range(3)]
+    if args.loss_split != 'auto':
+        loss_split = args.loss_split.split('-')
+        loss_split = [int(loss_split[i]) for i in range(3)]
+        sum = 0
+        for i in range(3):
+            sum += loss_split[i]
+        loss_split = [loss_split[i] / sum for i in range(3)]
 
     model.train()
 
@@ -127,12 +114,17 @@ def train_epoch(model, train_iter, optimizer, args):
         pos_loss, ner_loss, chunk_loss = losses
         pos_pred, ner_pred, chunk_pred = preds
 
-        loss = (loss_split[0] * pos_loss + loss_split[1] * ner_loss + loss_split[2] * chunk_loss)\
-               / args.accumulation_steps
+        if args.loss_split == 'auto':
+            loss = pos_loss / torch.exp(model.log_sigma_square_pos[0]) + model.log_sigma_square_pos[0]/2\
+                   + ner_loss / torch.exp(model.log_sigma_square_ner[0]) + model.log_sigma_square_ner[0]/2\
+                   + chunk_loss / torch.exp(model.log_sigma_square_chunk[0]) + model.log_sigma_square_chunk[0]/2
+        else:
+            loss = (loss_split[0] * pos_loss + loss_split[1] * ner_loss + loss_split[2] * chunk_loss)\
+                    / args.accumulation_steps
 
         loss.backward()
 
-        nn.utils.clip_grad_norm(model.parameters(), max_norm=5.0)
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
 
         total_loss += loss.item()
 
@@ -166,14 +158,21 @@ def train_epoch(model, train_iter, optimizer, args):
                 ner_f1 = f1_score(ner_true_lst, ner_pred_lst)
                 chunk_f1 = f1_score(chunk_true_lst, chunk_pred_lst)
 
-                summary_writer.add_scalar('Train/train_loss', total_loss, steps)
-                summary_writer.add_scalars('Train/train_measure', {
+                summary_writer.add_scalar('Train_Loss/'+config_str, total_loss/print_every, steps)
+                summary_writer.add_scalars('Train_Measure/'+config_str, {
                     'POS-ACC': pos_acc,
                     'NER-F1': ner_f1,
                     'CHUNK-F1': chunk_f1
                 }, steps)
                 logger.info('   - Step {}: loss {}, pos_acc {:.3f}%, ner_f1 {:.3f}%, chunk_f1 {:.3f}%'
-                            .format(steps, total_loss, pos_acc*100, ner_f1*100, chunk_f1*100))
+                            .format(steps, total_loss/print_every, pos_acc*100, ner_f1*100, chunk_f1*100))
+
+                if args.loss_split == 'auto':
+                    summary_writer.add_scalars('Sigma_squre', {
+                        'POS_Sigma': torch.exp(model.log_sigma_square_pos[0]),
+                        'NER_Sigma': torch.exp(model.log_sigma_square_ner[0]),
+                        'CHUNK_Sigma': torch.exp(model.log_sigma_square_chunk[0])
+                    }, steps)
 
                 total_loss = 0
                 instances, corrects = 0, 0
@@ -187,7 +186,7 @@ def train_epoch(model, train_iter, optimizer, args):
     return all_pos_acc, all_ner_f1, all_chunk_f1
 
 
-def eval_epoch(model, data_iter):
+def eval_epoch(model, data_iter, args):
 
     global lb_vocabs
     pos_vocab, ner_vocab, chunk_vocab = lb_vocabs
@@ -195,6 +194,7 @@ def eval_epoch(model, data_iter):
     logger.info('Evaluating...')
 
     total_loss = 0
+    steps = 0
 
     # eval POS tagging: Accuracy
     all_correct = 0
@@ -208,6 +208,14 @@ def eval_epoch(model, data_iter):
     all_chunk_pred_lst = []
     all_chunk_true_lst = []
 
+    if args.loss_split != 'auto':
+        loss_split = args.loss_split.split('-')
+        loss_split = [int(loss_split[i]) for i in range(3)]
+        sum = 0
+        for i in range(3):
+            sum += loss_split[i]
+        loss_split = [loss_split[i] / sum for i in range(3)]
+
     model.eval()
 
     with torch.no_grad():
@@ -219,9 +227,16 @@ def eval_epoch(model, data_iter):
             pos_loss, ner_loss, chunk_loss = losses
             pos_pred, ner_pred, chunk_pred = preds
 
-            loss = (pos_loss + ner_loss + chunk_loss) / 3
-            # loss = pos_loss / accumulation_steps
+            if args.loss_split == 'auto':
+                loss = pos_loss / torch.exp(model.log_sigma_square_pos[0]) + model.log_sigma_square_pos[0] / 2 \
+                       + ner_loss / torch.exp(model.log_sigma_square_ner[0]) + model.log_sigma_square_ner[0] / 2 \
+                       + chunk_loss / torch.exp(model.log_sigma_square_chunk[0]) + model.log_sigma_square_chunk[0] / 2
+            else:
+                loss = loss_split[0] * pos_loss + loss_split[1] * ner_loss + loss_split[2] * chunk_loss
+
             total_loss += loss.item()
+            
+            steps += 1
 
             for i in range(pos_pred.size(0)):
                 # eval POS Tagging: Accuracy
@@ -250,7 +265,7 @@ def eval_epoch(model, data_iter):
     logger.info('NER Report:\n'+classification_report(all_ner_true_lst, all_ner_pred_lst))
     logger.info('Chunking Report:\n'+classification_report(all_chunk_true_lst, all_chunk_pred_lst))
 
-    return total_loss, all_pos_acc, all_ner_f1, all_chunk_f1
+    return total_loss/steps, all_pos_acc, all_ner_f1, all_chunk_f1
 
 
 def train(model, train_iter, dev_iter, optimizer, args):
@@ -261,11 +276,8 @@ def train(model, train_iter, dev_iter, optimizer, args):
     # model = nn.DataParallel(model, device).cuda()
     model = model.cuda()
 
-    config_str = ''
-    global model_config
-    for key, value in model_config.items():
-        config_str += key + '-' + value + '-'
-    log_path = os.path.join(args.log_dir, config_str + args.loss_split)
+    global config_str
+    log_path = os.path.join(args.log_dir, config_str)
     # log_path = args.log_dir + str(time.strftime('%Y-%m-%d_%H.%M.%S', time.localtime()))
     global summary_writer
     summary_writer = SummaryWriter(log_path)
@@ -280,13 +292,13 @@ def train(model, train_iter, dev_iter, optimizer, args):
                             chunk_f1*100, time.time() - start_time))
 
         start_time = time.time()
-        dev_loss, dev_pos, dev_ner, dev_chunk = eval_epoch(model, dev_iter)
+        dev_loss, dev_pos, dev_ner, dev_chunk = eval_epoch(model, dev_iter, args)
         logger.info('Validation: Loss: {}  Measure: {:.3f}%, {:.3f}%, {:.3f}%. Elapse: {:.3f}%s.'
                     .format(dev_loss, dev_pos*100, dev_ner*100, dev_chunk*100,
                             time.time() - start_time))
 
-        summary_writer.add_scalar('Validation/dev_loss', dev_loss, i_epoch + 1)
-        summary_writer.add_scalars('Validation/dev_measure', {
+        summary_writer.add_scalar('Validation_Loss/'+config_str, dev_loss, i_epoch + 1)
+        summary_writer.add_scalars('Validation_Measure/'+config_str, {
             'POS-ACC': dev_pos,
             'NER-F1': dev_ner,
             'CHUNK-F1': dev_chunk
@@ -301,18 +313,11 @@ def train(model, train_iter, dev_iter, optimizer, args):
 
     logger.info('Training finished. Cost {:.3f}% hours.'.format((time.time() - total_time)/3600))
     logger.info('Dumping model...')
-    save_path = os.path.join(args.save_path, config_str + args.loss_split)
+    save_path = os.path.join(args.save_path, config_str)
     torch.save(model, save_path + '.pkl')
     logger.info('Model saved as {}.'.format(save_path + '.pkl'))
 
     return
-
-
-def test(model, test_iter):
-    logger.info('Testing...')
-    model = model.cuda()
-    test_acc = eval_epoch(model, test_iter)
-    return test_acc
 
 
 def main():
@@ -320,7 +325,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-n_epoch', type=int, default=10)
+    parser.add_argument('-n_epoch', type=int, default=15)
     parser.add_argument('-batch_size', type=int, default=64)
     parser.add_argument('-gpu', type=str, default='0')
     parser.add_argument('-accumulation_steps', type=int, default=1)
@@ -335,6 +340,42 @@ def main():
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     bsz = args.batch_size // args.accumulation_steps
+
+    global logger
+    global model_config
+    global config_str
+
+    model_config = {}
+    print('Reading configure file {}...'.format(args.model_config))
+    with open(args.model_config, 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            key = line.split(':')[0].strip()
+            value = line.split(':')[1].strip()
+            model_config[key] = value
+            print('{}: {}'.format(key, value))
+
+    config_str = ''
+    for key, value in model_config.items():
+        config_str += key + '-' + value + '-'
+    config_str += args.loss_split
+
+    # Stream Handler
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.INFO)
+    stream_formatter = logging.Formatter('[%(levelname)s] %(message)s')
+    stream_handler.setFormatter(stream_formatter)
+    logger.addHandler(stream_handler)
+
+    # File Handler
+    file_handler = logging.FileHandler('logs/' + config_str + '.log')
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter(fmt='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s',
+                                       datefmt='%Y/%m/%d %H:%M:%S')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+
+
     logger.info('========== Loading Datasets ==========')
     data = torch.load('data/all_data.pkl')
     vocab = data['vocab']
@@ -359,12 +400,12 @@ def main():
     logger.info('Train set loaded.')
 
     dev_set = SeqLabDataset(dev_data)
-    dev_iter = DataLoader(dev_set, batch_size=bsz,
+    dev_iter = DataLoader(dev_set, batch_size=args.batch_size,
                           num_workers=2, collate_fn=custom_collate)
     logger.info('Development set loaded.')
 
     test_set = SeqLabDataset(test_data)
-    test_iter = DataLoader(test_set, batch_size=bsz,
+    test_iter = DataLoader(test_set, batch_size=args.batch_size,
                            num_workers=2, collate_fn=custom_collate)
     logger.info('Test set loaded.')
     logger.info('Datasets finished.')
@@ -373,17 +414,6 @@ def main():
     word_embedding = load_word_emb(args.embed_path, 300, vocab)
 
     logger.info('========== Preparing Model ==========')
-    global model_config
-    model_config = {}
-    logger.info('Reading configure file {}...'.format(args.model_config))
-    with open(args.model_config, 'r') as f:
-        lines = f.readlines()
-        for line in lines:
-            key = line.split(':')[0].strip()
-            value = line.split(':')[1].strip()
-            model_config[key] = value
-            logger.info('{}: {}'.format(key, value))
-
     if model_config['model'] == 'transformer':
         model = Transformer(args, model_config, word_embedding)
     elif model_config['model'] == 'LSTM':

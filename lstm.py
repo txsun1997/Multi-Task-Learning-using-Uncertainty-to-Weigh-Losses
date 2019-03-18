@@ -73,6 +73,10 @@ class BiLSTM(nn.Module):
                 ConditionalRandomField(self.n_classes[2], True)
             ])
 
+        self.log_sigma_square_pos = nn.Parameter(torch.Tensor([0]))
+        self.log_sigma_square_ner = nn.Parameter(torch.Tensor([0]))
+        self.log_sigma_square_chunk = nn.Parameter(torch.Tensor([0]))
+
     def forward(self, x, y1, y2, y3, mask):
         x = self.embed(x)
         rnn_inp = self.dropout(x)
