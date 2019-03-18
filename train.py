@@ -168,7 +168,7 @@ def train_epoch(model, train_iter, optimizer, args):
                             .format(steps, total_loss/print_every, pos_acc*100, ner_f1*100, chunk_f1*100))
 
                 if args.loss_split == 'auto':
-                    summary_writer.add_scalars('Sigma_squre', {
+                    summary_writer.add_scalars('Sigma_squre/'+config_str, {
                         'POS_Sigma': torch.exp(model.log_sigma_square_pos[0]),
                         'NER_Sigma': torch.exp(model.log_sigma_square_ner[0]),
                         'CHUNK_Sigma': torch.exp(model.log_sigma_square_chunk[0])
@@ -235,7 +235,7 @@ def eval_epoch(model, data_iter, args):
                 loss = loss_split[0] * pos_loss + loss_split[1] * ner_loss + loss_split[2] * chunk_loss
 
             total_loss += loss.item()
-            
+
             steps += 1
 
             for i in range(pos_pred.size(0)):

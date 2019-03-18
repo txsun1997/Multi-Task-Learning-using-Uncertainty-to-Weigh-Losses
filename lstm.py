@@ -4,6 +4,7 @@ import numpy as np
 from crf import ConditionalRandomField
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
+
 def calc_loss(logit, y, mask):
     ''' Calculate loss of single task. '''
 
@@ -68,9 +69,9 @@ class BiLSTM(nn.Module):
 
         if self.use_crf:
             self.crf = nn.ModuleList([
-                ConditionalRandomField(self.n_classes[0], True),
-                ConditionalRandomField(self.n_classes[1], True),
-                ConditionalRandomField(self.n_classes[2], True)
+                ConditionalRandomField(self.n_classes[0]),
+                ConditionalRandomField(self.n_classes[1]),
+                ConditionalRandomField(self.n_classes[2])
             ])
 
         self.log_sigma_square_pos = nn.Parameter(torch.Tensor([0]))
@@ -86,6 +87,10 @@ class BiLSTM(nn.Module):
         y = [y1, y2, y3]
 
         if self.use_crf:
+            # losses = [self.crf[i].neg_log_likelihood_loss(logits[i], mask, y[i])
+            #           for i in range(3)]
+            # preds = [self.crf[i](logits[i], mask)
+            #          for i in range(3)]
             losses = [self.crf[i](logits[i], y[i], mask).mean()
                       for i in range(3)]
             preds = [self.crf[i].viterbi_decode(logits[i], mask)

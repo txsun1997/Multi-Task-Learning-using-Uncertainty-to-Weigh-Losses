@@ -4,15 +4,21 @@
 
 [OntoNotes Release 5.0](https://catalog.ldc.upenn.edu/LDC2013T19)
 
+### JOINT LOSS
+
+$$
+\mathcal{L}(\mathbf{W}, \sigma_1, \sigma_2, \sigma_3) = \sum_{i=1}^{3}{\frac{1}{\sigma_i^2}}\mathcal{L}_i(\mathbf{W}) + \mathrm{log}\sigma_i
+$$
+
 ### Results
 
 |      Tasks      | CRF  | Loss Split | POS (Acc)  |  NER (F1)  | CHUNKING (F1) |
 | :-------------: | :--: | :--------: | :--------: | :--------: | :-----------: |
 |     **ALL**     |      |            |            |            |               |
-|                 |  ×   |    auto    |            |            |               |
-|                 |  ×   |   1-1-1    |            |            |               |
-|                 |  √   |    auto    |            |            |               |
-|                 |  √   |   1-1-1    |   96.35%   |   82.99%   |    92.08%     |
+|                 |  ×   |    auto    | **96.58%** |   81.73%   |    90.90%     |
+|                 |  ×   |   1-1-1    |   96.45%   |   81.33%   |    91.11%     |
+|                 |  √   |    auto    |   96.54%   |   83.72%   |    92.07%     |
+|                 |  √   |   1-1-1    | **96.58%** | **83.91%** |  **92.24%**   |
 |  **POS & NER**  |      |            |            |            |               |
 |                 |  √   |    auto    |            |            |       -       |
 |                 |  √   |   0-1-0    |     -      |   82.87%   |       -       |
