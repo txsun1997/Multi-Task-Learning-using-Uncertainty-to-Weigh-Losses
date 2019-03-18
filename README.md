@@ -4,7 +4,7 @@
 
 [OntoNotes Release 5.0](https://catalog.ldc.upenn.edu/LDC2013T19)
 
-### JOINT LOSS
+### Joint Loss
 
 $$
 \mathcal{L}(\mathbf{W}, \sigma_1, \sigma_2, \sigma_3) = \sum_{i=1}^{3}{\frac{1}{\sigma_i^2}}\mathcal{L}_i(\mathbf{W}) + \mathrm{log}\sigma_i
